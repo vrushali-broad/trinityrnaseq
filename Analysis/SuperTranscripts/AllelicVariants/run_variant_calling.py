@@ -43,38 +43,23 @@ def main():
                         "GATK: env var \"$GATK_HOME\" with the path to GATK's bin\n"),
         epilog="", formatter_class=argparse.RawTextHelpFormatter) 
     
-    parser.add_argument('--st_fa', '--supertranscript_fasta', dest="st_fa", type=str, required=True,
-                        help="Path to the SuperTranscripts fasta file.")
+    parser.add_argument('--st_fa', '--supertranscript_fasta', dest="st_fa", type=str, required=True, help="Path to the SuperTranscripts fasta file.")
 
-    parser.add_argument('--st_gtf', '--supertranscript_gtf', dest="st_gtf", type=str, required=True,
-                        help="Path to the SuperTranscript gtf file.")
+    parser.add_argument('--st_gtf', '--supertranscript_gtf', dest="st_gtf", type=str, required=True, help="Path to the SuperTranscript gtf file.")
 
     group = parser.add_mutually_exclusive_group(required=True)
 
-    group.add_argument('-p', '--paired', dest="paired_reads", type=str, nargs=2,
-                       help="Pair of paired ends read files.")
+    group.add_argument('-p', '--paired', dest="paired_reads", type=str, nargs=2, help="Pair of paired ends read files.")
 
-    group.add_argument('-s', '--single', dest="single_reads", type=str,
-                       help="Single reads file.")
+    group.add_argument('-s', '--single', dest="single_reads", type=str, help="Single reads file.")
 
-    group.add_argument("-S", "--samples_file", dest="samples_file", type=str,
-                       help="Trinity samples file (fmt: condition_name replicate_name /path/to/reads_1.fq /path/to/reads_2.fq (tab-delimited, single sample per line))")
+    parser.add_argument('-o', '--output', dest="out_path", type=str, required=True, help="Path to the folder where to generate the output.")
+
+    parser.add_argument('-l', '--sjdbOverhang', dest="sjdbOverhang", default=150, type=int, help="Size of the reads (used for STAR --sjdbOverhang). default=150")
     
-    parser.add_argument('-o', '--output', dest="out_path", type=str, required=True,
-                        help="Path to the folder where to generate the output.")
+    parser.add_argument('-t', '--threads', dest="nthreads", type=str, default="4", help="Number of threads to use for tools that are multithreaded.")
 
-    parser.add_argument('-l', '--sjdbOverhang', dest="sjdbOverhang", default=150, type=int,
-                        help="Size of the reads (used for STAR --sjdbOverhang). default=150")
-    
-    parser.add_argument('-t', '--threads', dest="nthreads", type=str, default="4",
-                        help="Number of threads to use for tools that are multithreaded.")
-
-    parser.add_argument('-m', '--maxram', dest="maxram", type=str, default="50000000000",
-                        help="Maximum amount of RAM allowed for STAR's genome generation step (only change if you get an error from STAR complaining about this value).")
-
-
-    parser.add_argument("--STAR_genomeGenerate_opts", type=str, default="",
-                        help="options to pass through to STAR's genomeGenerate function")
+    parser.add_argument('-m', '--maxram', dest="maxram", type=str, default="50000000000", help="Maximum amount of RAM allowed for STAR's genome generation step (only change if you get an error from STAR complaining about this value).")
 
     args = parser.parse_args()
 
@@ -88,32 +73,14 @@ def main():
     if not GATK_HOME:
         exit("Error, missing path to GATK in $GATK.")
 
+
+
     # get real paths before changing working directory in case they are relative paths
     if args.paired_reads:
         reads_paths = [os.path.realpath(f) for f in args.paired_reads]
-    elif args.single_reads:
-        reads_paths = [os.path.realpath(args.single_reads)]
-    elif args.samples_file:
-        left_fq_list = list()
-        right_fq_list = list()
-        with open(args.samples_file) as fh:
-            for line in fh:
-                line = line.rstrip()
-                if not re.match("\w", line):
-                    continue
-                fields = line.split("\t")
-                left_fq = fields[2]
-                left_fq_list.append(os.path.realpath(left_fq))
-                if len(fields) > 3:
-                    right_fq = fields[3]
-                    right_fq_list.append(os.path.realpath(right_fq))
-        reads_paths = [",".join(left_fq_list)]
-        if right_fq_list:
-            reads_paths.append(",".join(right_fq_list))
     else:
-        raise RuntimeError("no reads specified") # should never get here
+        reads_paths = [os.path.realpath(args.single_reads)]
 
-    
     st_fa_path = os.path.realpath(args.st_fa)
 
     st_gtf_path = os.path.realpath(args.st_gtf)
@@ -153,16 +120,14 @@ def main():
     
     star_genome_generate_cmd = str("STAR --runThreadN " +
                                    args.nthreads +
+                                   " --outSAMmapqUnique 60"+
                                    " --runMode genomeGenerate" +
                                    " --genomeDir star_genome_idx " +
                                    " --genomeFastaFiles {} ".format(st_fa_path) +
-                                   " --genomeSAindexNbases 8 " +  # as per A. Dobin
                                    " --sjdbGTFfile {} ".format(st_gtf_path) +
                                    " --sjdbOverhang {} ".format(args.sjdbOverhang) +
-                                   " --limitGenomeGenerateRAM {}".format(args.maxram) +
-                                   " {} ".format(args.STAR_genomeGenerate_opts)
-                                   )
-    
+                                   " --limitGenomeGenerateRAM {}".format(args.maxram) )
+        
     pipeliner.add_commands([
         Pipeliner.Command("mkdir star_genome_idx", "mkdir_star_genome_idx.ok"),
 
@@ -179,6 +144,7 @@ def main():
               + " --runMode alignReads "
               + " --twopassMode Basic "
               + " --alignSJDBoverhangMin 10 "
+              + " --outSAMmapqUnique 60"
               + " --outSAMtype BAM SortedByCoordinate "
               + " --limitBAMsortRAM {} ".format(args.maxram) 
               + " --readFilesIn " + " ".join(reads_paths) )
@@ -189,11 +155,7 @@ def main():
     pipeliner.add_commands([Pipeliner.Command(cmd, "star_aln.ok")])
     pipeliner.run()
 
-
-    ##
-    ## GATK settings based on best practices:
-    ## https://software.broadinstitute.org/gatk/documentation/article.php?id=3891
-    ##
+    
     
     # clean and convert sam file with Picard-Tools
     logger.info("Cleaning and Converting sam file with Picard-Tools.")
@@ -224,13 +186,18 @@ def main():
 
         Pipeliner.Command(UTILDIR + "/clean_bam.pl dedupped.bam dedupped.bam.validation dedupped.valid.bam",
                           "make_valid_dedupped_bam.ok"),
-        
-        Pipeliner.Command("java -jar " + GATK_HOME + "/GenomeAnalysisTK.jar " +
-                          "-T SplitNCigarReads -R " + st_fa_path +
-                          " -I dedupped.valid.bam -o splitNCigar.bam " +
-                          " -rf ReassignOneMappingQuality -RMQF 255 -RMQT 60 -U ALLOW_N_CIGAR_READS  --validation_strictness LENIENT",
+        # the option -U ALLOW_N_CIGAR_READS is not required in GATK 4
+        # the option -RMQF 255 -RMQT 60 : use --outSAMmapqUnique 60 in STAR : https://software.broadinstitute.org/gatk/blog?id=4285
+        # Cufflinks requires a MAPQ score of 255 so that will need to be changed if cufflinks is used for downstream analysis
+        #  ReassignOneMappingQuality read filter reassigns all good alignments to the default value of 60. 
+        #" -RF MappingQualityAvailableReadFilter --read-validation-stringency LENIENT",
+        Pipeliner.Command("java -jar " + GATK_HOME + "/gatk-package-4.0.1.2-local.jar " +
+                          " SplitNCigarReads -R " + st_fa_path +
+                          " -I dedupped.valid.bam -O splitNCigar.bam " +
+                          " --read-validation-stringency LENIENT",
                           "splitNCigarReads.ok")
         ])
+    
     pipeliner.run()
 
     
@@ -239,9 +206,9 @@ def main():
     logger.info("Variant Calling using Haplotype Caller.")
 
     pipeliner.add_commands([
-        Pipeliner.Command("java -jar " + GATK_HOME + "/GenomeAnalysisTK.jar " +
-                          "-T HaplotypeCaller -R " + st_fa_path +
-                          " -I ./splitNCigar.bam -dontUseSoftClippedBases -stand_call_conf 20.0 -o output.vcf",
+        Pipeliner.Command("java -jar " + GATK_HOME + "/gatk-package-4.0.1.2-local.jar " +
+                          "HaplotypeCaller -R " + st_fa_path +
+                          " -I ./splitNCigar.bam --dont-use-soft-clipped-bases true -stand-call-conf 20 -O output.vcf",
                           "haplotypecaller.ok")
         ])
     pipeliner.run()
@@ -250,11 +217,11 @@ def main():
     logger.info("Doing some basic filtering of vcf.")
     
     pipeliner.add_commands([
-        Pipeliner.Command("java -jar " + GATK_HOME + "/GenomeAnalysisTK.jar " +
-                          "-T VariantFiltration -R " + st_fa_path +
+        Pipeliner.Command("java -jar " + GATK_HOME + "/gatk-package-4.0.1.2-local.jar " +
+                          " VariantFiltration -R " + st_fa_path +
                           " -V output.vcf -window 35 -cluster 3 " +
-                          "-filterName FS -filter \"FS > 30.0\" " +
-                          "-filterName QD -filter \"QD < 2.0\" -o filtered_output.vcf",
+                          "--filter-name FS -filter \"FS > 30.0\" " +
+                          "--filter-name QD -filter \"QD < 2.0\" -O filtered_output.vcf",
                           "variant_filt.ok")
         ])
 
